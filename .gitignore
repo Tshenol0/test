@@ -1,6 +1,0 @@
-node_modules/
-__pycache__/
-*.pyc
-.env
-generated-apps/*
-!generated-apps/.gitkeep
