@@ -1,0 +1,117 @@
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: paas_traefik
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=paas_web
+      - --entrypoints.web.address=:80
+      - --api.dashboard=true
+      - --api.insecure=true
+    ports:
+      - "80:80"
+      - "8080:8080" # Traefik dashboard (dev only)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
+
+  db:
+    image: postgres:16-alpine
+    container_name: app_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apppassword}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-appdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - web
+
+  apps-db:
+    image: postgres:16-alpine
+    container_name: paas_apps_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${APPS_DB_ADMIN_USER:-apps_admin}
+      POSTGRES_PASSWORD: ${APPS_DB_ADMIN_PASSWORD:-appspassword}
+      POSTGRES_DB: postgres
+    volumes:
+      - apps_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APPS_DB_ADMIN_USER:-apps_admin} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - web
+
+  backend:
+    build:
+      context: ./backend
+    container_name: app_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-appuser}:${POSTGRES_PASSWORD:-apppassword}@db:5432/${POSTGRES_DB:-appdb}
+      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      CORS_ORIGINS: http://localhost:3000
+      # --- PaaS / generated-app settings ---
+      BASE_DOMAIN: ${BASE_DOMAIN:-yourpaas.localhost}
+      WEB_NETWORK: paas_web
+      GENERATED_APPS_DIR: /generated-apps
+      APPS_DB_HOST: apps-db
+      APPS_DB_PORT: 5432
+      APPS_DB_ADMIN_USER: ${APPS_DB_ADMIN_USER:-apps_admin}
+      APPS_DB_ADMIN_PASSWORD: ${APPS_DB_ADMIN_PASSWORD:-appspassword}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./generated-apps:/generated-apps
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      apps-db:
+        condition: service_healthy
+    networks:
+      - web
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: app_frontend
+    restart: unless-stopped
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+    networks:
+      - web
+
+networks:
+  web:
+    name: paas_web
+    driver: bridge
+
+volumes:
+  db_data:
+  apps_db_data:
